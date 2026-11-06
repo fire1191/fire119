@@ -77,7 +77,7 @@ function registerTraining(p) {
 // 아래 관리자 기능은 끝에 _가 있어 google.script.run으로 호출할 수 없습니다.
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('소방교육 관리')
-    .addItem('현재 교육 엑셀 내려받기','exportCurrent_')
+    .addItem('신청 명단 엑셀 내려받기','exportCurrent_')
     .addSeparator().addItem('접수 열기','openRegistration_').addItem('접수 마감','closeRegistration_')
     .addItem('다음 교육 준비','nextTraining_')
     .addItem('신청 페이지 열기','showLink_').addToUi();
@@ -111,10 +111,7 @@ function nextTraining_() {
 }
 function showLink_() { SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput('<p><a href="'+SITE_URL+'" target="_blank" rel="noopener">소방교육 신청 페이지 열기</a></p>'),'신청 페이지'); }
 function exportCurrent_() {
-  const t=config_(),s=responseSheet_(),last=s.getLastRow();
-  const rows=last>1?s.getRange(2,1,last-1,13).getValues():[];
-  const data=rows.filter(function(r){return String(r[1])===t.id;}).map(function(r,i){return {'번호':i+1,'교육명':String(r[2]),'교육 일자':Utilities.formatDate(new Date(r[3]),'Asia/Seoul','yyyy-MM-dd'),'이름':String(r[4]),'사번':String(r[5]),'소속':String(r[6]),'이메일':String(r[7]),'참여 시간':String(r[8]),'신청 일시 (한국 시간)':Utilities.formatDate(new Date(r[9]),'Asia/Seoul','yyyy-MM-dd HH:mm:ss'),'개인정보 동의':String(r[11])};});
-  const json=JSON.stringify(data).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
-  const html='<!doctype html><html lang="ko"><head><base target="_top"><script src="'+SITE_URL+'vendor/xlsx.full.min.js"></script></head><body style="font:14px sans-serif;padding:20px"><h3>현재 교육 신청 명단</h3><p>교육일: '+t.event_date+' · '+data.length+'명</p><button id="download" disabled style="padding:12px">엑셀 내려받기 (.xlsx)</button><p id="status">준비 중…</p><script>const rows='+json+';const b=document.getElementById("download"),s=document.getElementById("status");if(window.XLSX){b.disabled=false;s.textContent="아래 버튼으로 현재 교육 명단만 내려받습니다.";}else{s.textContent="엑셀 도구를 불러오지 못했습니다. 창을 닫고 다시 시도해 주세요.";}b.onclick=()=>{const w=XLSX.utils.book_new();const headers=["번호","교육명","교육 일자","이름","사번","소속","이메일","참여 시간","신청 일시 (한국 시간)","개인정보 동의"];const sh=XLSX.utils.json_to_sheet(rows,{header:headers});sh["!cols"]=[6,45,14,18,18,25,35,25,30,18].map(wch=>({wch}));XLSX.utils.book_append_sheet(w,sh,"신청 명단");XLSX.writeFile(w,"소방교육-신청명단-'+t.event_date+'.xlsx");s.textContent="내려받기를 요청했습니다.";};</script></body></html>';
-  SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(450).setHeight(260),'엑셀 내려받기');
+  const url='https://docs.google.com/spreadsheets/d/'+SHEET_ID+'/export?format=xlsx';
+  const html='<!doctype html><html lang="ko"><head><base target="_top"></head><body style="font:14px sans-serif;padding:20px"><h3>신청 명단 엑셀 내려받기</h3><p>전체 교육의 신청 명단과 교육설정을 엑셀로 저장합니다. 교육명 열로 구분할 수 있습니다.</p><p><a href="'+url+'" target="_blank" rel="noopener" style="display:inline-block;padding:12px;background:#2458e8;color:white;border-radius:8px;text-decoration:none">엑셀 파일 받기 (.xlsx)</a></p><p style="font-size:12px;color:#63738c">관리자 학교 계정으로 로그인해야 내려받을 수 있습니다.</p></body></html>';
+  SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(470).setHeight(280),'엑셀 내려받기');
 }
