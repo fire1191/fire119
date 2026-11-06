@@ -5,6 +5,12 @@ const SITE_URL = 'https://leg2900-arch.github.io/fire-safety/';
 const HEADERS_ = ['접수번호','교육ID','교육명','교육일자','이름','사번','소속','이메일','참여시간','신청일시','개인정보 안내','동의여부','요청ID'];
 
 function doGet(e) {
+  if(e && e.parameter && e.parameter.api) {
+    try {
+      if(e.parameter.api!=='training') throw new Error('허용되지 않은 요청입니다.');
+      return apiJson_({ok:true,data:currentTraining()});
+    } catch(error) { return apiJson_({ok:false,error:error.message}); }
+  }
   const t = HtmlService.createTemplateFromFile('Index');
   t.demo = e && e.parameter && e.parameter.demo === '1';
   return t.evaluate().setTitle('교직원 소방안전교육 신청')
@@ -40,6 +46,7 @@ function responseSheet_() {
 function registerTraining(p) {
   if(!p || p.p_consent!==true) throw new Error('개인정보 안내 확인 및 동의가 필요합니다.');
   const employee=text_(p.p_employee_id,30,'사번'),name=text_(p.p_name,50,'이름');
+     if(!/^\d{9}$/.test(employee)) throw new Error('사번은 숫자 9자리로 입력해 주세요.');
   const dept=text_(p.p_department,100,'소속'),email=text_(p.p_email,254,'이메일');
   const session=text_(p.p_session,100,'참여 시간'),eventId=text_(p.p_event_id,80,'교육 ID');
   const requestId=text_(p.p_request_id,80,'요청 ID');
@@ -80,6 +87,7 @@ function onOpen() {
     .addItem('신청 명단 엑셀 내려받기','exportCurrent_')
     .addSeparator().addItem('접수 열기','openRegistration_').addItem('접수 마감','closeRegistration_')
     .addItem('다음 교육 준비','nextTraining_')
+    .addItem('교육명 수정','renameTraining_')
     .addItem('신청 페이지 열기','showLink_').addToUi();
 }
 function setup_() {
@@ -114,4 +122,55 @@ function exportCurrent_() {
   const url='https://docs.google.com/spreadsheets/d/'+SHEET_ID+'/export?format=xlsx';
   const html='<!doctype html><html lang="ko"><head><base target="_top"></head><body style="font:14px sans-serif;padding:20px"><h3>신청 명단 엑셀 내려받기</h3><p>전체 교육의 신청 명단과 교육설정을 엑셀로 저장합니다. 교육명 열로 구분할 수 있습니다.</p><p><a href="'+url+'" target="_blank" rel="noopener" style="display:inline-block;padding:12px;background:#2458e8;color:white;border-radius:8px;text-decoration:none">엑셀 파일 받기 (.xlsx)</a></p><p style="font-size:12px;color:#63738c">관리자 학교 계정으로 로그인해야 내려받을 수 있습니다.</p></body></html>';
   SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(470).setHeight(280),'엑셀 내려받기');
+}
+function renameTraining_() {
+  const ui = SpreadsheetApp.getUi();
+  const s = db_().getSheetByName('교육설정');
+  const current = String(s.getRange('B3').getValue());
+  const r = ui.prompt('교육명 수정',
+    '현재: ' + current + '\n새 교육명을 입력하세요.\n(접수 중에도 변경 가능하고, 기존 신청 내역은 유지됩니다.)',
+    ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return;
+  const title = r.getResponseText().trim();
+  if (!title || title.length > 100 || /[\x00-\x1f\x7f]/.test(title)) {
+    ui.alert('교육명 형식과 길이를 확인해 주세요.');
+    return;
+  }
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    s.getRange('B3').setNumberFormat('@').setValue(literal_(title));
+    SpreadsheetApp.flush();
+  } finally { lock.releaseLock(); }
+  ui.alert('교육명을 "' + title + '"(으)로 변경했어요. 신청 페이지를 새로고침하면 반영돼요.');
+}
+function lookupRegistration(p) {
+  if(!p) throw new Error('사번과 이름을 입력해 주세요.');
+  const employee=text_(p.p_employee_id,30,'사번'),name=text_(p.p_name,50,'이름');
+  if(!/^\d{9}$/.test(employee)) throw new Error('사번은 숫자 9자리로 입력해 주세요.');
+  const t=config_();
+  const sheet=responseSheet_(),last=sheet.getLastRow();
+  const rows=last>1?sheet.getRange(2,1,last-1,13).getValues():[];
+  const found=rows.filter(function(r){
+    return String(r[1])===t.id && key_(String(r[5]))===key_(employee) && String(r[4]).trim()===name;
+  });
+  if(!found.length) return null;
+  const r=found[found.length-1];
+  const date=r[3] instanceof Date ? Utilities.formatDate(r[3],'Asia/Seoul','yyyy-MM-dd') : String(r[3]).trim();
+  return {name:String(r[4]),event_date:date,session:String(r[8]),created_at:new Date(r[9]).toISOString()};
+}
+// GitHub 신청 화면의 익명 데이터 요청. 개인정보는 URL이 아닌 POST 본문으로만 전달합니다.
+function apiJson_(value) {
+  return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
+}
+function doPost(e) {
+  try {
+    if(!e || !e.postData || typeof e.postData.contents!=='string' || e.postData.contents.length>20000) throw new Error('요청 형식을 확인해 주세요.');
+    const request=JSON.parse(e.postData.contents);
+    let result;
+    if(request.action==='register_training') result=registerTraining(request.data);
+    else if(request.action==='lookup_registration') result=lookupRegistration(request.data);
+    else throw new Error('허용되지 않은 요청입니다.');
+    return apiJson_({ok:true,data:result});
+  } catch(error) { return apiJson_({ok:false,error:error.message||'요청을 처리하지 못했습니다.'}); }
 }
