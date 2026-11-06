@@ -1,7 +1,7 @@
 // 이 코드는 신청관리 스프레드시트에 연결된 Apps Script에서 실행합니다.
 // 웹 방문자가 호출할 수 있는 업무 함수는 currentTraining, registerTraining뿐입니다.
 const SHEET_ID = '1UX9CVlKfbV-XgInlxpDLvqK-ERvqyHzjPG-IXwuDblw';
-const SITE_URL = 'https://leg2900-arch.github.io/fire-safety/';
+const SITE_URL = 'https://fire1191.github.io/fire119/';
 const HEADERS_ = ['접수번호','교육ID','교육명','교육일자','이름','사번','소속','이메일','참여시간','신청일시','개인정보 안내','동의여부','요청ID'];
 
 function doGet(e) {
@@ -18,18 +18,34 @@ function doGet(e) {
 }
 function db_() { return SpreadsheetApp.openById(SHEET_ID); }
 function config_() {
-  const rows = db_().getSheetByName('교육설정').getRange('A2:B7').getValues();
-  const c = {}; rows.forEach(function(row) { c[row[0]] = row[1]; });
-  const date = c['교육일자'] instanceof Date
-    ? Utilities.formatDate(c['교육일자'],'Asia/Seoul','yyyy-MM-dd') : String(c['교육일자']).trim();
-  const sessions = String(c['참여시간']).split('\n').map(function(s){return s.trim();}).filter(Boolean);
-  if (!c['교육ID'] || !String(c['교육명']).trim() || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !sessions.length || sessions.length>10 || new Set(sessions).size!==sessions.length) {
-    throw new Error('교육 설정을 확인해 주세요. 시설팀 내선 2087로 문의해 주세요.');
-  }
-  return {id:String(c['교육ID']),title:String(c['교육명']),event_date:date,sessions:sessions,
-    privacy_notice:String(c['개인정보 안내']),is_open:String(c['접수상태']).trim()==='접수중'};
+  const s=db_().getSheetByName('교육설정');
+  const c={};s.getRange('A2:B7').getValues().forEach(function(r){c[r[0]]=r[1];});
+  const date=c['교육일자'] instanceof Date ? Utilities.formatDate(c['교육일자'],'Asia/Seoul','yyyy-MM-dd') : String(c['교육일자']).trim();
+  const sessions=String(c['참여시간']).split('\n').map(function(v){return v.trim();}).filter(Boolean);
+  if(!c['교육ID']||!String(c['교육명']).trim()||!/^\d{4}-\d{2}-\d{2}$/.test(date)||!sessions.length||sessions.length>10||new Set(sessions).size!==sessions.length)throw new Error('교육 설정을 확인해 주세요. 시설팀 내선 2087로 문의해 주세요.');
+  const status=String(c['접수상태']).trim();
+  const mode=status==='자동'?'auto':(status==='수동 열기'||status==='접수중')?'open':'closed';
+  const table=s.getRange('A11:C20').getDisplayValues();
+  let scheduleError='';const windows=[];
+  sessions.forEach(function(session){
+    const found=table.filter(function(r){return String(r[0]).trim()===session;});
+    if(found.length!==1){scheduleError='교육설정의 출석 시간표를 확인해 주세요.';return;}
+    const from=String(found[0][1]).trim(),to=String(found[0][2]).trim();
+    if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(from)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(to)||to<=from){scheduleError='등록 시작·마감은 24시간제 HH:mm으로 입력하고 마감을 시작보다 늦게 설정해 주세요.';return;}
+    windows.push({session:session,start_time:from,end_time:to,opens_at:new Date(date+'T'+from+':00+09:00').toISOString(),closes_at:new Date(date+'T'+to+':00+09:00').toISOString()});
+  });
+  return {id:String(c['교육ID']),title:String(c['교육명']),event_date:date,sessions:sessions,privacy_notice:String(c['개인정보 안내']),registration_mode:mode,session_windows:windows,schedule_error:scheduleError,is_open:mode!=='closed'};
 }
-function currentTraining() { return config_(); }
+function allowedSessions_(t,now) {
+  if(t.registration_mode==='open')return t.sessions.slice();
+  if(t.registration_mode!=='auto'||t.schedule_error)return [];
+  const ms=now.getTime();
+  return t.session_windows.filter(function(w){return ms>=Date.parse(w.opens_at)&&ms<Date.parse(w.closes_at);}).map(function(w){return w.session;});
+}
+function currentTraining() {
+  const t=config_(),now=new Date(),allowed=allowedSessions_(t,now);
+  t.available_sessions=allowed;t.is_open=allowed.length>0;t.server_time=now.toISOString();return t;
+}
 function literal_(value) { return /^[=+\-@]/.test(value) ? "'"+value : value; }
 function text_(value,max,label) {
   if(typeof value !== 'string') throw new Error(label+'을(를) 입력해 주세요.');
@@ -66,9 +82,10 @@ function registerTraining(p) {
       }
     }
     const t=config_();
-    if(!t.is_open || t.id!==eventId) throw new Error('접수가 마감되었거나 교육이 변경되었습니다. 페이지를 다시 열어 주세요.');
+    if(t.id!==eventId)throw new Error('교육이 변경되었습니다. 페이지를 다시 열어 주세요.');
     if(t.privacy_notice.length<20||t.privacy_notice.indexOf('[게시 전 수정 필요]')>=0) throw new Error('개인정보 안내를 준비 중입니다. 담당자에게 문의해 주세요.');
-    if(t.sessions.indexOf(session)<0) throw new Error('신청 가능한 참여 시간을 선택해 주세요.');
+    if(t.sessions.indexOf(session)<0)throw new Error('교육 시간을 확인해 주세요.');
+    if(allowedSessions_(t,new Date()).indexOf(session)<0)throw new Error('선택하신 교육의 출석 등록 시간이 아닙니다. 출석 등록 시간표를 확인해 주세요.');
     if(rows.some(function(r){return String(r[1])===eventId&&key_(String(r[5]))===key_(employee);})) throw new Error('접수 상태를 확인해 주세요. 이미 신청한 경우 시설팀 내선 2087로 문의해 주세요.');
     const now=new Date(),row=last+1;
     if(row>sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(),100);
@@ -84,11 +101,13 @@ function registerTraining(p) {
 // 아래 관리자 기능은 끝에 _가 있어 google.script.run으로 호출할 수 없습니다.
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('소방교육 관리')
-    .addItem('신청 명단 엑셀 내려받기','exportCurrent_')
-    .addSeparator().addItem('접수 열기','openRegistration_').addItem('접수 마감','closeRegistration_')
+    .addItem('출석 명단 엑셀 내려받기','exportCurrent_')
+    .addSeparator().addItem('시간표대로 자동 운영','automaticRegistration_')
+    .addItem('지금 열기 (시간 제한 해제)','openRegistration_').addItem('지금 닫기','closeRegistration_')
+    .addItem('출석 시간·운영 설정','showSchedule_')
     .addItem('다음 교육 준비','nextTraining_')
     .addItem('교육명 수정','renameTraining_')
-    .addItem('신청 페이지 열기','showLink_').addToUi();
+    .addItem('출석 등록 페이지 열기','showLink_').addToUi();
 }
 function setup_() {
   const ss=db_();ss.setSpreadsheetTimeZone('Asia/Seoul');
@@ -103,24 +122,24 @@ function status_(value) {
 function openRegistration_() {
   const t=config_();
   if(t.privacy_notice.length<20||t.privacy_notice.indexOf('[게시 전 수정 필요]')>=0) throw new Error('교육설정 탭에서 개인정보 안내문을 먼저 확정해 주세요.');
-  status_('접수중');SpreadsheetApp.getUi().alert('접수를 열었습니다.');
+  status_('수동 열기');SpreadsheetApp.getUi().alert('지금부터 모든 교육 시간의 출석 등록을 받습니다. 시간 제한을 다시 적용하려면 시간표대로 자동 운영을 선택하세요.');
 }
-function closeRegistration_() { status_('마감');SpreadsheetApp.getUi().alert('접수를 마감했습니다.'); }
+function closeRegistration_() { status_('마감');SpreadsheetApp.getUi().alert('출석 등록을 닫았습니다. 자동 운영으로 돌아가려면 시간표대로 자동 운영을 선택하세요.'); }
 function nextTraining_() {
   const ui=SpreadsheetApp.getUi(),c=config_();
-  if(c.is_open) { ui.alert('현재 교육 접수를 먼저 마감해 주세요.');return; }
+  if(c.registration_mode!=='closed') {ui.alert('먼저 소방교육 관리 → 지금 닫기를 선택해 주세요.');return;}
   const title=ui.prompt('다음 교육','교육 제목을 입력하세요.',ui.ButtonSet.OK_CANCEL);if(title.getSelectedButton()!==ui.Button.OK)return;
   const date=ui.prompt('교육 날짜','YYYY-MM-DD 형식으로 입력하세요.',ui.ButtonSet.OK_CANCEL);if(date.getSelectedButton()!==ui.Button.OK)return;
   if(!title.getResponseText().trim()||!/^\d{4}-\d{2}-\d{2}$/.test(date.getResponseText()))throw new Error('제목과 날짜 형식을 확인해 주세요.');
   const lock=LockService.getScriptLock();lock.waitLock(20000);
   try {const s=db_().getSheetByName('교육설정');s.getRange('B2:B4').setValues([[Utilities.getUuid()],[literal_(title.getResponseText().trim())],[new Date(date.getResponseText()+'T00:00:00+09:00')]]);s.getRange('B4').setNumberFormat('yyyy-mm-dd');s.getRange('B7').setValue('마감');SpreadsheetApp.flush();}
   finally{lock.releaseLock();}
-  ui.alert('새 교육을 준비했습니다. 교육설정 탭에서 시간과 개인정보 안내를 확인하고 접수를 열어 주세요. 이전 명단은 그대로 보관됩니다.');
+  ui.alert('새 교육을 준비했습니다. 교육설정에서 교육 시간, 출석 등록 시간표, 개인정보 안내를 확인한 뒤 소방교육 관리 → 시간표대로 자동 운영을 선택하세요. 이전 명단은 그대로 보관됩니다.');
 }
-function showLink_() { SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput('<p><a href="'+SITE_URL+'" target="_blank" rel="noopener">소방교육 신청 페이지 열기</a></p>'),'신청 페이지'); }
+function showLink_() { SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput('<p><a href="'+SITE_URL+'" target="_blank" rel="noopener">소방교육 출석 등록 페이지 열기</a></p>'),'출석 등록 페이지'); }
 function exportCurrent_() {
   const url='https://docs.google.com/spreadsheets/d/'+SHEET_ID+'/export?format=xlsx';
-  const html='<!doctype html><html lang="ko"><head><base target="_top"></head><body style="font:14px sans-serif;padding:20px"><h3>신청 명단 엑셀 내려받기</h3><p>전체 교육의 신청 명단과 교육설정을 엑셀로 저장합니다. 교육명 열로 구분할 수 있습니다.</p><p><a href="'+url+'" target="_blank" rel="noopener" style="display:inline-block;padding:12px;background:#2458e8;color:white;border-radius:8px;text-decoration:none">엑셀 파일 받기 (.xlsx)</a></p><p style="font-size:12px;color:#63738c">관리자 학교 계정으로 로그인해야 내려받을 수 있습니다.</p></body></html>';
+  const html='<!doctype html><html lang="ko"><head><base target="_top"></head><body style="font:14px sans-serif;padding:20px"><h3>출석 명단 엑셀 내려받기</h3><p>전체 교육의 출석 명단과 교육설정을 엑셀로 저장합니다. 교육명 열로 구분할 수 있습니다.</p><p><a href="'+url+'" target="_blank" rel="noopener" style="display:inline-block;padding:12px;background:#2458e8;color:white;border-radius:8px;text-decoration:none">엑셀 파일 받기 (.xlsx)</a></p><p style="font-size:12px;color:#63738c">관리자 학교 계정으로 로그인해야 내려받을 수 있습니다.</p></body></html>';
   SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(470).setHeight(280),'엑셀 내려받기');
 }
 function renameTraining_() {
@@ -173,4 +192,13 @@ function doPost(e) {
     else throw new Error('허용되지 않은 요청입니다.');
     return apiJson_({ok:true,data:result});
   } catch(error) { return apiJson_({ok:false,error:error.message||'요청을 처리하지 못했습니다.'}); }
+}
+
+function automaticRegistration_() {
+  const t=config_();if(t.schedule_error)throw new Error(t.schedule_error);
+  if(t.privacy_notice.length<20||t.privacy_notice.indexOf('[게시 전 수정 필요]')>=0)throw new Error('개인정보 안내문을 먼저 확정해 주세요.');
+  status_('자동');SpreadsheetApp.getUi().alert('교육설정의 교육일자와 출석 시간표대로 자동 운영합니다. 시작 시각에 열리고 마감 시각이 되면 닫힙니다.');
+}
+function showSchedule_() {
+  const ss=db_(),s=ss.getSheetByName('교육설정');ss.setActiveSheet(s);s.getRange('A10:C12').activate();
 }
